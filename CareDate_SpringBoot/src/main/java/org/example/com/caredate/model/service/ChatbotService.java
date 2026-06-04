@@ -2,10 +2,9 @@ package org.example.com.caredate.model.service;
 
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestTemplate;
 
-import java.time.Duration;
 import java.util.*;
 
 @Service
@@ -19,6 +18,14 @@ public class ChatbotService {
     private static final String URL = "https://api.openai.com/v1/responses";
 
     public String preguntar(String mensajeUsuario) {
+
+        System.out.println("=====================================");
+        System.out.println("MENSAJE RECIBIDO: " + mensajeUsuario);
+        System.out.println("API KEY NULL? " + (API_KEY == null));
+
+        if (API_KEY != null) {
+            System.out.println("API KEY LENGTH: " + API_KEY.length());
+        }
 
         if (API_KEY == null || API_KEY.isBlank()) {
             return "Error de configuración del servidor (API KEY).";
@@ -35,6 +42,7 @@ public class ChatbotService {
         contadorPreguntas++;
 
         try {
+
             RestTemplate restTemplate = crearRestTemplateSeguro();
 
             HttpHeaders headers = new HttpHeaders();
@@ -43,41 +51,62 @@ public class ChatbotService {
 
             Map<String, Object> body = construirBody(mensajeUsuario);
 
-            HttpEntity<Map<String, Object>> request = new HttpEntity<>(body, headers);
+            System.out.println("BODY ENVIADO:");
+            System.out.println(body);
+
+            HttpEntity<Map<String, Object>> request =
+                    new HttpEntity<>(body, headers);
 
             ResponseEntity<Map> response =
                     restTemplate.postForEntity(URL, request, Map.class);
 
-            return procesarRespuesta(response, mensajeUsuario);
+            System.out.println("=====================================");
+            System.out.println("OPENAI RESPONSE:");
+            System.out.println(response.getBody());
+            System.out.println("=====================================");
+
+            return procesarRespuesta(response);
 
         } catch (ResourceAccessException e) {
-            return "El servicio está tardando demasiado. Intenta de nuevo.";
+
+            e.printStackTrace();
+
+            return "Timeout al conectar con OpenAI.";
+
         } catch (Exception e) {
-            return respuestaFallback(mensajeUsuario);
+
+            e.printStackTrace();
+
+            return "ERROR: " + e.getMessage();
         }
     }
 
     private Map<String, Object> construirBody(String mensajeUsuario) {
-        System.out.println("API KEY: " + API_KEY);
+
         Map<String, Object> body = new HashMap<>();
+
         body.put("model", "gpt-4.1-mini");
         body.put("max_output_tokens", 100);
-        body.put("temperature", 0.5);
 
         List<Map<String, Object>> input = new ArrayList<>();
 
         input.add(Map.of(
                 "role", "system",
                 "content", List.of(
-                        Map.of("type", "text",
-                                "text", "Eres un asistente médico de CareDate. Responde breve, clara y útil. No des diagnósticos definitivos.")
+                        Map.of(
+                                "type", "input_text",
+                                "text", "Eres un asistente médico de CareDate. Responde breve, clara y útil. No des diagnósticos definitivos."
+                        )
                 )
         ));
 
         input.add(Map.of(
                 "role", "user",
                 "content", List.of(
-                        Map.of("type", "text", "text", mensajeUsuario)
+                        Map.of(
+                                "type", "input_text",
+                                "text", mensajeUsuario
+                        )
                 )
         ));
 
@@ -86,59 +115,47 @@ public class ChatbotService {
         return body;
     }
 
-    private String procesarRespuesta(ResponseEntity<Map> response, String mensajeUsuario) {
+    private String procesarRespuesta(ResponseEntity<Map> response) {
 
-        if (response.getBody() == null) {
-            return respuestaFallback(mensajeUsuario);
+        Map body = response.getBody();
+
+        if (body == null) {
+            return "La respuesta de OpenAI llegó vacía.";
         }
 
-        Object outputObj = response.getBody().get("output");
+        Object outputObj = body.get("output");
 
-        if (!(outputObj instanceof List)) {
-            return respuestaFallback(mensajeUsuario);
+        if (!(outputObj instanceof List<?> output)) {
+            return "No se encontró 'output' en la respuesta.";
         }
 
-        List output = (List) outputObj;
+        for (Object item : output) {
 
-        if (output.isEmpty()) {
-            return respuestaFallback(mensajeUsuario);
+            if (!(item instanceof Map<?, ?> map)) {
+                continue;
+            }
+
+            Object contentObj = map.get("content");
+
+            if (!(contentObj instanceof List<?> contentList)) {
+                continue;
+            }
+
+            for (Object content : contentList) {
+
+                if (!(content instanceof Map<?, ?> contentMap)) {
+                    continue;
+                }
+
+                Object text = contentMap.get("text");
+
+                if (text != null) {
+                    return text.toString();
+                }
+            }
         }
 
-        Object firstObj = output.get(0);
-
-        if (!(firstObj instanceof Map)) {
-            return respuestaFallback(mensajeUsuario);
-        }
-
-        Map first = (Map) firstObj;
-
-        Object contentObj = first.get("content");
-
-        if (!(contentObj instanceof List)) {
-            return respuestaFallback(mensajeUsuario);
-        }
-
-        List content = (List) contentObj;
-
-        if (content.isEmpty()) {
-            return respuestaFallback(mensajeUsuario);
-        }
-
-        Object textObjRaw = content.get(0);
-
-        if (!(textObjRaw instanceof Map)) {
-            return respuestaFallback(mensajeUsuario);
-        }
-
-        Map textObj = (Map) textObjRaw;
-
-        Object text = textObj.get("text");
-
-        if (text == null) {
-            return respuestaFallback(mensajeUsuario);
-        }
-
-        return text.toString();
+        return "No se encontró texto en la respuesta de OpenAI.";
     }
 
     private RestTemplate crearRestTemplateSeguro() {
@@ -147,27 +164,8 @@ public class ChatbotService {
                 new org.springframework.http.client.SimpleClientHttpRequestFactory();
 
         factory.setConnectTimeout(5000);
-        factory.setReadTimeout(8000);
+        factory.setReadTimeout(10000);
 
         return new RestTemplate(factory);
-    }
-
-    private String respuestaFallback(String mensaje) {
-
-        mensaje = mensaje.toLowerCase();
-
-        if (mensaje.contains("cita")) {
-            return "Puedes agendar una cita desde la sección de citas en la app.";
-        }
-
-        if (mensaje.contains("registro")) {
-            return "Regístrate ingresando tus datos y luego verifica tu correo.";
-        }
-
-        if (mensaje.contains("doctor") || mensaje.contains("medico")) {
-            return "Puedes consultar especialistas disponibles desde el apartado de médicos.";
-        }
-
-        return "Soy el asistente de CareDate. ¿En qué puedo ayudarte?";
     }
 }
